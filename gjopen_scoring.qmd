@@ -1,0 +1,76 @@
+---
+title: "GJ Open scoring"
+author: 'Jan Verkade'
+date: today
+date-format: full
+title-block-banner: true
+format:
+  html:
+    theme: cosmo
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+---
+
+```{r preliminaries, message=F}
+rm(list=objects())
+library(tidyverse)
+library(lubridate)
+library(rvest)
+library(reshape2)
+library(knitr)
+```
+
+# The Putin question
+
+The sample dataset I am using here originates from [the GJ Open forecasting question about Vladimir Putin](https://www.gjopen.com/questions/2287-will-vladimir-putin-cease-to-be-the-president-of-the-russian-federation-before-1-january-2023):
+
+> Will Vladimir Putin cease to be the president of the Russian Federation before 1 January 2023?
+
+Which resolved as No, i.e. to a 0% probability of Yes.
+
+```{r read_forecasts}
+forecasts <- readRDS(file='putin_forecasts.rds')
+forecasts <- forecasts %>% mutate(participation_length = ifelse(user=='crowd',forecasts$participation_length[1],participation_length))
+kable(tail(forecasts))
+```
+
+# Brier score
+```{r bs_compute}
+# add 'no' bin for every forecast
+forecasts <- rbind(forecasts, forecasts %>% mutate(answer = 'No', probability = 1 - probability))
+
+# add observations to each answer
+forecasts <- forecasts %>% mutate(obs = case_when(answer == 'Yes' ~ 0, answer == 'No' ~ 1))
+
+# Add count, for BS is computed using an average and count will allow us to average over the days
+forecasts <- forecasts %>% group_by(user, answer) %>% add_count(name = 'N') %>% ungroup()
+forecasts <- forecasts %>% mutate(diff = (obs-probability)^2) %>% group_by(date, user) %>% mutate(bs_contrib = sum(diff)) %>% 
+  group_by(user, answer) %>% mutate(bs_contrib_sum = sum(bs_contrib)) %>% mutate(bs = bs_contrib_sum/N)
+bs <- forecasts %>% group_by(user) %>% select(user, bs, participation_length) %>% mutate(participation_length = as.numeric(participation_length)) %>% ungroup() %>% distinct() 
+```
+
+## Participation rate
+
+```{r}
+forecasts <- forecasts %>% mutate(participation_rate = participation_length/max(forecasts$participation_length))
+```
+
+
+## Median score
+
+From [the GJ Open FAQ page](https://www.gjopen.com/faq):
+
+> **Median Score**: The Median score is simply the median of all Brier scores from all users with an active forecast on a question (in other words, forecasts made on or before that day). Like with your Brier score, we calculate a Median score for each day that a question is open, and the Median score reported on the profile page is the average median score for those days when you had an active forecast. We also report the average across all questions on which you made forecasts (in parentheses under your overall Brier score). 
+
+which I am interpreting as follows:
+
+- the Median score is a crowd score
+- the Median score is time-dependent
+- the average Median score varies with participation length, and therefore with user.
+
+```{r compute_median_score}
+ms <- forecasts %>% group_by(date) %>% summarize(median = median(bs))
+mean(ms$median[ms$date > ymd('20220507')])
+```
+
